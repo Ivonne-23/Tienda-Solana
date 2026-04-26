@@ -1,146 +1,123 @@
-
-//////////////////// Imports ////////////////////
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 
-//////////////////// Constantes ////////////////////
-const NOMBRE_TIENDA = "Mi Tiendita Solana";
-const CODIGO_PRODUCTO = "PROD-001"; 
-const admin = pg.wallet.publicKey;
-
-//////////////////// Logs base ////////////////////
-console.log("Direccion del Admin:", admin.toBase58());
-
-//////////////////// PDAs (Program Derived Addresses) ////////////////////
-
-// PDA para la configuracion global de la tienda
-function pdaTienda(adminPk: PublicKey) {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("tienda"), adminPk.toBuffer()],
-    pg.PROGRAM_ID
-  );
-}
-
-// PDA unica para cada producto basada en su codigo
-function pdaProducto(adminPk: PublicKey, codigo: string) {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("producto"), adminPk.toBuffer(), Buffer.from(codigo)],
-    pg.PROGRAM_ID
-  );
-}
-
-//////////////////// Helpers de Fetch ////////////////////
-
-async function fetchTienda(pda: PublicKey) {
-  return await pg.program.account.tiendaDb.fetch(pda);
-}
-
-async function fetchProducto(pda: PublicKey) {
-  return await pg.program.account.producto.fetch(pda);
-}
-
-//////////////////// Instrucciones (CRUD) ////////////////////
-
-// 1. CREATE: Inicializar la tienda maestra
-async function inicializarTienda(nombre: string) {
-  const [pda_tienda] = pdaTienda(admin);
-
+(async () => {
   try {
-    const txHash = await pg.program.methods
-      .inicializarTienda(nombre)
+    console.log("INICIANDO SISTEMA DE INVENTARIO ");
+
+    const admin = pg.wallet.publicKey;
+    const NOMBRE_TIENDA = "Tiendita de la esquina";
+    
+    // Configuracion de Productos
+    const CODIGO_P1 = "Leche102";
+    const NOMBRE_P1 = "Leche Santa Clara";
+    
+    const CODIGO_P2 = "Pan005";
+    const NOMBRE_P2 = "Pan Integral";
+
+    console.log("Admin Public Key:", admin.toBase58());
+
+    // --- 1. DEFINICION DE PDAs ---
+    // Se calculan las direcciones de las cuentas basadas en las semillas definidas en el contrato
+    const [pdaTienda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("tienda"), admin.toBuffer()],
+      pg.PROGRAM_ID
+    );
+
+    const [pdaProd1] = PublicKey.findProgramAddressSync(
+      [Buffer.from("producto"), admin.toBuffer(), Buffer.from(CODIGO_P1)],
+      pg.PROGRAM_ID
+    );
+
+    const [pdaProd2] = PublicKey.findProgramAddressSync(
+      [Buffer.from("producto"), admin.toBuffer(), Buffer.from(CODIGO_P2)],
+      pg.PROGRAM_ID
+    );
+
+    // --- 2. INICIALIZAR TIENDA (CREATE) ---
+    // Crea la cuenta maestra que llevara el control global de la tienda
+    try {
+      await pg.program.methods
+        .inicializarTienda(NOMBRE_TIENDA)
+        .accounts({
+          tiendaDb: pdaTienda,
+          admin: admin,
+          systemProgram: web3.SystemProgram.programId,
+        })
+        .rpc();
+      console.log("Tienda inicializada exitosamente.");
+    } catch (e) {
+      console.log("La tienda ya existe en la blockchain.");
+    }
+
+    // --- 3. AGREGAR PRODUCTOS (CREATE) ---
+    // Producto 1
+    await pg.program.methods
+      .agregarProducto(CODIGO_P1, NOMBRE_P1, new BN(1500), new BN(10), "Lacteos")
       .accounts({
-        tiendaDb: pda_tienda,
+        tiendaDb: pdaTienda,
+        producto: pdaProd1,
         admin: admin,
         systemProgram: web3.SystemProgram.programId,
       })
       .rpc();
+    console.log("Producto agregado correctamente:", NOMBRE_P1);
 
-    console.log("Transaccion Crear Tienda:", txHash);
-  } catch (e) {
-    console.log("Informacion: La tienda ya existe o hubo un error de red.");
+    // Producto 2
+    await pg.program.methods
+      .agregarProducto(CODIGO_P2, NOMBRE_P2, new BN(800), new BN(20), "Panaderia")
+      .accounts({
+        tiendaDb: pdaTienda,
+        producto: pdaProd2,
+        admin: admin,
+        systemProgram: web3.SystemProgram.programId,
+      })
+      .rpc();
+    console.log("Producto agregado correctamente:", NOMBRE_P2);
+
+    // --- 4. ACTUALIZAR STOCK (UPDATE) ---
+    // Modifica el stock del Producto 1
+    await pg.program.methods
+      .actualizarStock(CODIGO_P1, new BN(50))
+      .accounts({
+        producto: pdaProd1,
+        admin: admin,
+      })
+      .rpc();
+    console.log("Stock de", NOMBRE_P1, "actualizado a 50 unidades.");
+
+    // --- 5. LECTURA DE DATOS (READ) ---
+    // Recupera la informacion de las cuentas para verificar el estado actual
+    const dataP1 = await pg.program.account.producto.fetch(pdaProd1);
+    const dataP2 = await pg.program.account.producto.fetch(pdaProd2);
+    
+    console.log("Estado actual del inventario:");
+    console.log("-", dataP1.nombre, "| Stock:", dataP1.stock.toString());
+    console.log("-", dataP2.nombre, "| Stock:", dataP2.stock.toString());
+
+    // --- 6. ELIMINAR PRODUCTO (DELETE) ---
+    // Cierra la cuenta del Producto 2 para liberar espacio y recuperar la renta en SOL
+    await pg.program.methods
+      .eliminarProducto(CODIGO_P2)
+      .accounts({
+        producto: pdaProd2,
+        admin: admin,
+      })
+      .rpc();
+    console.log("Producto", NOMBRE_P2, "eliminado. ");
+
+    // --- 7. VERIFICACION FINAL ---
+    // El Producto 1 debe seguir existiendo y el Producto 2 debe lanzar error al intentar leerlo
+    try {
+      await pg.program.account.producto.fetch(pdaProd2);
+    } catch (e) {
+      console.log("Confirmacion: El producto", NOMBRE_P2, "ya no reside en la blockchain.");
+    }
+
+    console.log("OPERACIONES COMPLETADAS EXITOSAMENTE");
+
+  } catch (err) {
+    console.error("Error detectado durante la ejecucion:");
+    console.error(err.message);
   }
-
-  const cuenta = await fetchTienda(pda_tienda);
-  console.log("Tienda:", cuenta.nombre, "| Productos totales:", cuenta.totalProductos.toString());
-}
-
-// 2. CREATE: Agregar un producto al inventario
-async function agregarProducto(codigo: string, nombre: string, precio: number, stock: number, categoria: string) {
-  const [pda_tienda] = pdaTienda(admin);
-  const [pda_prod] = pdaProducto(admin, codigo);
-
-  const txHash = await pg.program.methods
-    .agregarProducto(codigo, nombre, new BN(precio), new BN(stock), categoria)
-    .accounts({
-      tiendaDb: pda_tienda,
-      producto: pda_prod,
-      admin: admin,
-      systemProgram: web3.SystemProgram.programId,
-    })
-    .rpc();
-
-  console.log("Transaccion Agregar Producto:", txHash);
-  
-  const prodAccount = await fetchProducto(pda_prod);
-  console.log("Producto guardado:", prodAccount.nombre, "- Stock:", prodAccount.stock.toString());
-}
-
-// 3. UPDATE: Actualizar el stock de un producto
-async function actualizarStock(codigo: string, nuevoStock: number) {
-  const [pda_prod] = pdaProducto(admin, codigo);
-
-  const txHash = await pg.program.methods
-    .actualizarStock(codigo, new BN(nuevoStock))
-    .accounts({
-      producto: pda_prod,
-      admin: admin,
-    })
-    .rpc();
-
-  console.log("Transaccion Actualizar Stock:", txHash);
-  const prodAccount = await fetchProducto(pda_prod);
-  console.log("Nuevo stock de", prodAccount.nombre, ":", prodAccount.stock.toString());
-}
-
-// 4. DELETE: Eliminar producto y cerrar cuenta (Recuperar renta)
-async function eliminarProducto(codigo: string) {
-  const [pda_prod] = pdaProducto(admin, codigo);
-
-  const txHash = await pg.program.methods
-    .eliminarProducto(codigo)
-    .accounts({
-      producto: pda_prod,
-      admin: admin,
-    })
-    .rpc();
-
-  console.log("Transaccion Eliminar Producto:", txHash);
-  console.log("Cuenta cerrada y SOL devuelto al admin.");
-}
-
-//////////////////// Demo Runner ////////////////////
-
-async function ejecutarPruebas() {
-  try {
-    console.log("--- Iniciando Pruebas del Sistema ---");
-
-    // Inicializar tienda
-    await inicializarTienda(NOMBRE_TIENDA);
-
-    // Agregar producto
-    await agregarProducto(CODIGO_PRODUCTO, "Laptop Gamer", 5000000, 10, "Electronica");
-
-    // Actualizar producto
-    await actualizarStock(CODIGO_PRODUCTO, 25);
-
-    // Eliminar producto (Opcional, descomenta si quieres probarlo)
-    // await eliminarProducto(CODIGO_PRODUCTO);
-
-    console.log("--- Todas las pruebas CRUD finalizaron con exito ---");
-  } catch (error) {
-    console.error("Error en la ejecucion:", error);
-  }
-}
-
-// Ejecutar el runner
-ejecutarPruebas();
+})();
